@@ -1,0 +1,30 @@
+# Python / Alembic
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Environment — never commit credentials
+.env
+.env.local
+.env.*.local
+alembic.ini.local
+database.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DB dumps / backups
+*.bak
+*.dump
+*.sql.gz
