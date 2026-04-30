@@ -1,36 +1,29 @@
 -- =============================================================================
--- JikkoOps Control Database - Users and Authentication
+-- JikkoOps Control Database - Users, Roles, MFA
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
 -- Table: users
--- JikkoOps operators and admins. Not end-users of the tenant applications.
+-- Operators of JikkoOps (admins, comerciales, finanzas) and tenant-scoped users.
 -- ---------------------------------------------------------------------------
-
 CREATE TABLE users (
-    id              UUID        NOT NULL DEFAULT gen_random_uuid(),
-    -- NULL for global admins; set to an entity for entity-scoped operators
-    entity_id       UUID,
-    nombre          VARCHAR(150) NOT NULL,
-    email           VARCHAR(255) NOT NULL,
-    -- bcrypt hash (cost factor >= 12). Never store plaintext.
-    password_hash   TEXT        NOT NULL,
-    estado          user_estado NOT NULL DEFAULT 'activo',
-    ultimo_acceso   TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT pk_users             PRIMARY KEY (id),
-    CONSTRAINT uq_users_email       UNIQUE (email),
-    CONSTRAINT fk_users_entity      FOREIGN KEY (entity_id)
-                                        REFERENCES entities (id) ON DELETE RESTRICT
+    id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- NULL for JikkoOps internal staff; set for tenant-scoped users
+    entity_id     UUID         REFERENCES entities(id) ON DELETE RESTRICT,
+    nombre        VARCHAR(255) NOT NULL,
+    email         VARCHAR(255) NOT NULL UNIQUE,
+    -- bcrypt/argon2 hash. Stored hash only — never plaintext.
+    password_hash TEXT         NOT NULL,
+    estado        user_estado  NOT NULL DEFAULT 'activo',
+    ultimo_acceso TIMESTAMPTZ,
+    -- Optional contact/profile data: {"telefono": "...", "cargo": "...", "departamento": "..."}
+    perfil        JSONB        NOT NULL DEFAULT '{}',
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE users IS
-    'JikkoOps platform operators and administrators. '
-    'Not to be confused with end-users of the tenant government applications.';
-COMMENT ON COLUMN users.password_hash IS
-    'bcrypt hash with cost factor >= 12. Never store or log the plaintext password.';
+COMMENT ON TABLE  users           IS 'JikkoOps operators and tenant-scoped users. NULL entity_id = JikkoOps internal staff.';
+COMMENT ON COLUMN users.password_hash IS 'Hashed password (bcrypt/argon2). Never stores plaintext.';
 
 CREATE TRIGGER trg_users_updated_at
     BEFORE UPDATE ON users
@@ -38,90 +31,71 @@ CREATE TRIGGER trg_users_updated_at
 
 -- ---------------------------------------------------------------------------
 -- Table: roles
+-- Named permission bundles (e.g. 'admin', 'comercial', 'finanzas', 'soporte').
 -- ---------------------------------------------------------------------------
-
 CREATE TABLE roles (
-    id          UUID        NOT NULL DEFAULT gen_random_uuid(),
-    nombre      VARCHAR(100) NOT NULL,
+    id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    nombre      VARCHAR(100) NOT NULL UNIQUE,
     descripcion TEXT,
-    -- Array of permission strings. e.g. ["tenants:read", "flags:write", "invoices:approve"]
-    permisos    JSONB       NOT NULL DEFAULT '[]',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT pk_roles         PRIMARY KEY (id),
-    CONSTRAINT uq_roles_nombre  UNIQUE (nombre)
+    -- List of permission strings: ["contracts:read", "contracts:write", "flags:toggle"]
+    permisos    JSONB        NOT NULL DEFAULT '[]',
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE roles IS 'RBAC roles for JikkoOps operators. Permissions are stored as JSON array of strings.';
-COMMENT ON COLUMN roles.permisos IS
-    'Array of permission strings. e.g. ["tenants:read", "flags:write", "invoices:approve", "contracts:activate"]';
+COMMENT ON TABLE  roles          IS 'Named permission bundles. Users get one or more roles via user_roles.';
+COMMENT ON COLUMN roles.permisos IS 'JSON array of permission strings: ["resource:action", ...]';
 
 CREATE TRIGGER trg_roles_updated_at
     BEFORE UPDATE ON roles
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------------------------------------------------------------------------
--- Table: user_roles
+-- Junction: user_roles
+-- Assigns roles to users, optionally scoped to a specific tenant.
 -- ---------------------------------------------------------------------------
-
 CREATE TABLE user_roles (
-    user_id     UUID        NOT NULL,
-    role_id     UUID        NOT NULL,
-    -- Scope: NULL = global; set to a tenant_id for tenant-scoped role assignment
-    tenant_id   UUID,
-    granted_by  UUID        NOT NULL,
+    user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id     UUID        NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    -- NULL = role applies globally; set = role only for this tenant
+    tenant_id   UUID        REFERENCES tenants(id) ON DELETE CASCADE,
+    granted_by  UUID        REFERENCES users(id) ON DELETE SET NULL,
     granted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT pk_user_roles        PRIMARY KEY (user_id, role_id, COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::UUID)),
-    CONSTRAINT fk_ur_user           FOREIGN KEY (user_id)
-                                        REFERENCES users (id) ON DELETE CASCADE,
-    CONSTRAINT fk_ur_role           FOREIGN KEY (role_id)
-                                        REFERENCES roles (id) ON DELETE CASCADE,
-    CONSTRAINT fk_ur_tenant         FOREIGN KEY (tenant_id)
-                                        REFERENCES tenants (id) ON DELETE CASCADE,
-    CONSTRAINT fk_ur_granted_by     FOREIGN KEY (granted_by)
-                                        REFERENCES users (id) ON DELETE RESTRICT
+    PRIMARY KEY (user_id, role_id, COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::UUID))
 );
 
-COMMENT ON TABLE user_roles IS
-    'Assigns roles to users, optionally scoped to a specific tenant. '
-    'NULL tenant_id = global role valid across all tenants.';
+COMMENT ON TABLE  user_roles           IS 'M:N user↔role assignment. Optional tenant scope for per-tenant role grants.';
+COMMENT ON COLUMN user_roles.tenant_id IS 'NULL = global role; set = role only valid for this tenant.';
 
 -- ---------------------------------------------------------------------------
 -- Table: mfa_credentials
--- TOTP-based MFA for operators accessing critical endpoints.
+-- TOTP-based multi-factor authentication per user.
+-- Used for critical operations (revenue changes, high-value liquidations).
 -- ---------------------------------------------------------------------------
-
 CREATE TABLE mfa_credentials (
-    id                  UUID        NOT NULL DEFAULT gen_random_uuid(),
-    user_id             UUID        NOT NULL,
-    -- AES-256-GCM encrypted TOTP secret. Must be decrypted at application layer only.
-    -- Never log, serialize, or expose in API responses.
+    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             UUID        NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    -- TOTP secret. MUST be encrypted at rest (AES-256-GCM via app layer).
     secret              TEXT        NOT NULL,
     habilitado          BOOLEAN     NOT NULL DEFAULT false,
-    -- Counter for failed TOTP attempts. Locked after 5 consecutive failures.
     intentos_fallidos   INT         NOT NULL DEFAULT 0,
-    -- NULL = not locked; set to a future timestamp to enforce lockout duration
     bloqueado_hasta     TIMESTAMPTZ,
     ultimo_uso          TIMESTAMPTZ,
-    -- AES-256-GCM encrypted backup codes (one-time use for account recovery)
+    -- Recovery codes (one-time-use). Encrypted at rest at app layer.
     backup_codes        TEXT[]      NOT NULL DEFAULT '{}',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- FK to audit_log for the event that created/updated these credentials
-    audit_log_id        UUID,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Reference to most recent audit_log entry related to this credential
+    last_audit_log_id   UUID,
 
-    CONSTRAINT pk_mfa_credentials       PRIMARY KEY (id),
-    CONSTRAINT uq_mfa_credentials_user  UNIQUE (user_id),
-    CONSTRAINT fk_mfa_user              FOREIGN KEY (user_id)
-                                            REFERENCES users (id) ON DELETE CASCADE,
-    CONSTRAINT chk_mfa_intentos         CHECK (intentos_fallidos >= 0 AND intentos_fallidos <= 10)
+    CONSTRAINT chk_mfa_attempts CHECK (intentos_fallidos >= 0)
 );
 
-COMMENT ON TABLE mfa_credentials IS
-    'TOTP MFA credentials for JikkoOps operators. Required for critical endpoints: '
-    'POST /liquidaciones, PUT /feature-flags, POST /contracts/activate, DELETE /invoices.';
-COMMENT ON COLUMN mfa_credentials.secret IS
-    'AES-256-GCM encrypted TOTP secret. Application-layer decryption only. Never log.';
-COMMENT ON COLUMN mfa_credentials.backup_codes IS
-    'AES-256-GCM encrypted one-time recovery codes. Each code consumed on use.';
+COMMENT ON TABLE  mfa_credentials              IS 'Per-user TOTP MFA. Required for critical actions. Lockout after 5 failures.';
+COMMENT ON COLUMN mfa_credentials.secret       IS 'TOTP shared secret. MUST be AES-256-GCM encrypted at rest by app layer.';
+COMMENT ON COLUMN mfa_credentials.backup_codes IS 'One-time recovery codes. Encrypted at rest by app layer.';
+
+CREATE TRIGGER trg_mfa_credentials_updated_at
+    BEFORE UPDATE ON mfa_credentials
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();

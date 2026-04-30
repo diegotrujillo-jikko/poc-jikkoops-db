@@ -1,260 +1,338 @@
-# JikkoOps Control Database — Data Dictionary
+# Diccionario de Datos - JikkoOps Control DB
+
+> **Version**: 0.1 (primer enfoque, evolutivo)
+> **Idioma**: Español (es-CO) para campos comerciales, inglés para términos técnicos consolidados.
+
+Documenta cada tabla del esquema con: propósito, campos clave, reglas de negocio, y patrones de consulta típicos.
 
 ---
 
-## entities
+## 1. `entities`
 
-**Purpose**: Physical government organizations that contract JikkoOps services.
+**Propósito**: Cliente físico (municipio, gobernación, DIAN). Una entidad puede tener múltiples tenants.
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `id` | UUID PK | Internal identifier |
-| `nit` | VARCHAR(20) UK | Colombian tax ID. Used for DIAN invoicing compliance |
-| `tipo` | entity_tipo | Classification: municipio, gobernacion, dian, otro |
-| `region` | VARCHAR | Colombian department (e.g. Valle del Cauca) |
-| `estado` | entity_estado | Active/inactive/cancelled status |
-| `metadata` | JSONB | dane_code, nivel_alcaldia, presupuesto_anual_cop |
+**Campos clave**:
+- `id` (UUID) — PK
+- `nit` (VARCHAR) — NIT colombiano. Único.
+- `tipo` — `municipio | gobernacion | dian | otro`
+- `estado` — `activo | inactivo | cancelado`
+- `metadata` (JSONB) — claves esperadas: `sigia_id`, `codigo_dane`
 
-**Business Rules**: NIT must be unique. Cancelling an entity does not delete tenants — managed separately.
+**Reglas**:
+- Cancelar una entidad NO borra sus tenants (FK RESTRICT).
+- NIT debe validarse formato antes de insertar (módulo dígito de verificación).
 
-**Typical Queries**: Filter by estado='activo' and tipo for commercial pipeline.
-
----
-
-## tenants
-
-**Purpose**: A JikkoOps instance scoped to one entity. The unit of isolation, billing, and access control.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `nombre_tecnico` | VARCHAR UK | Slug used in Redis keys and API routing |
-| `db_connection_string` | TEXT | ENCRYPTED. Connection string to tenant's operational DB |
-| `plan_id` | UUID FK | Currently active commercial plan |
-| `expedientes_mes_limite` | INT | Monthly cap for caute model triggering |
-| `feature_flags_cache` | JSONB | DB-level fallback when Redis is unavailable |
-
-**Business Rules**: `fecha_vencimiento > fecha_activacion`. `db_connection_string` must never be logged or exposed.
-
-**Typical Queries**: Join to entities for commercial reports; filter by estado for billing jobs.
+**Consultas típicas**:
+- Buscar por NIT (índice `idx_entities_nit`).
+- Listar activos por región.
 
 ---
 
-## users
+## 2. `tenants`
 
-**Purpose**: JikkoOps platform operators and administrators (not end-users of government apps).
+**Propósito**: Instancia de JikkoOps por entidad. Cada tenant tiene su propia BD operativa aislada.
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `entity_id` | UUID FK nullable | NULL = global admin; set for entity-scoped operators |
-| `password_hash` | TEXT | bcrypt cost≥12. Never store plaintext |
-| `estado` | user_estado | bloqueado after MFA lockout |
+**Campos clave**:
+- `entity_id` (FK) — dueño físico
+- `nombre_tecnico` — slug único (ej. `municipio_cali`)
+- `db_connection_string` — DSN de su BD aislada (encriptado en reposo)
+- `plan_id` — plan vigente
+- `estado` — `activo | inactivo | en_prueba | suspendido`
+- `usuarios_limite`, `expedientes_mes_limite` — desnormalizados del plan/contrato
 
-**Business Rules**: Email is globally unique. `ultimo_acceso` updated on every successful login.
+**Reglas**:
+- `fecha_vencimiento > fecha_activacion` (CHECK).
+- Cambio de plan dispara resync de feature_flags (job).
+- Suspender un tenant NO borra datos — sólo bloquea acceso.
 
----
-
-## roles / user_roles
-
-**Purpose**: RBAC for platform operators.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `permisos` | JSONB | Array of strings: ["tenants:read", "flags:write"] |
-| `tenant_id` | UUID nullable | NULL = global scope; set for tenant-scoped assignment |
-
-**Typical Queries**: `SELECT permisos FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = $1`.
+**Consultas típicas**:
+- Tenants activos venciendo en 90 días (`idx_tenants_vencimiento`).
+- Lookup por `nombre_tecnico` para routing de API.
 
 ---
 
-## mfa_credentials
+## 3. `features`
 
-**Purpose**: TOTP MFA required for critical endpoints (liquidation, flag changes, contract activation).
+**Propósito**: Agrupación lógica de protected_resources que se vende como funcionalidad.
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `secret` | TEXT | AES-256-GCM encrypted TOTP seed. Application-layer only |
-| `intentos_fallidos` | INT | Locked after 5 failures |
-| `bloqueado_hasta` | TIMESTAMPTZ | NULL = not locked |
-| `backup_codes` | TEXT[] | Encrypted one-time recovery codes |
+**Campos clave**:
+- `nombre` — ej. "Liquidación", "Gestión Documental"
+- `modulo` — `SILIN | DOS | SOCIA | IAM`
+- `criticidad` — para priorización de incidentes
 
-**Business Rules**: One record per user (unique on user_id). Locked users cannot authenticate until admin resets.
-
----
-
-## features
-
-**Purpose**: Logical groupings of protected resources, aligned to a module (SILIN, DOS, SOCIA, IAM).
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `modulo` | modulo | Which integration module owns this feature |
-| `criticidad` | criticidad | Severity if feature is unavailable |
-| `estado` | feature_estado | activo/beta/deprecated |
-
-**Business Rules**: Feature names are unique per module. Deprecating a feature should not break existing entitlements.
+**Reglas**:
+- Agrupa recursos via `feature_protected_resources` (junction).
+- Eliminar feature pone los PRs en `estado = 'huerfano'` (FK SET NULL).
 
 ---
 
-## protected_resources
+## 4. `protected_resources`
 
-**Purpose**: Granular inventory of every activatable element — the unit of access control.
+**Propósito**: Inventario granular: cada botón, endpoint, vista, acción del sistema.
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `codigo` | VARCHAR(20) UK | Immutable business code (LIQ-001). NEVER rename after creation |
-| `tipo` | pr_tipo | button, endpoint, view, or action |
-| `feature_id` | UUID FK nullable | NULL = orphan (code deployed but not yet inventoried) |
-| `dependencias` | TEXT[] | Other PR codes that must be ON for this to function |
-| `estado` | pr_estado | huerfano until grouped; activo when in a plan |
+**Campos clave**:
+- `codigo` — único, patrón `{MODULE}-{NNN}` (ej. `LIQ-001`)
+- `tipo` — `button | endpoint | view | action`
+- `feature_id` — feature padre (NULL = huérfano)
+- `dependencias` (TEXT[]) — códigos de PRs requeridos
+- `estado` — `activo | huerfano | deprecated`
 
-**Business Rules**: `codigo` is immutable. Changing it breaks all feature_flags and entitlements. Orphan resources must be grouped by a manager before they appear in plans.
+**Reglas**:
+- `codigo` es **inmutable** una vez publicado (referencias en planes/tenants).
+- Recursos nuevos en código entran como `huerfano` hasta ser asignados a una feature.
+- Cambio de criticidad requiere code review.
 
----
-
-## products
-
-**Purpose**: Commercial product bundle (e.g. JikkoOps Básico). Groups features for plan assignment.
-
-**Business Rules**: Soft-delete via estado='deprecated'. Do not hard-delete products with active plans.
+**Consultas típicas**:
+- Lookup por código (`idx_protected_resources_codigo`).
+- Listar huérfanos para revisión periódica.
 
 ---
 
-## plans
+## 5. `products`
 
-**Purpose**: Commercial offerings with pricing, limits, and feature access.
+**Propósito**: Bundle comercial nombrado de features (ej. "JikkoOps Básico").
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `usuario_limite` | INT nullable | NULL = unlimited |
-| `expediente_limite_mes` | INT nullable | NULL = unlimited |
-| `precio_fijo` | NUMERIC(15,2) nullable | Fixed monthly fee; NULL for usage-based |
-| `modelo_revenue_default` | JSONB | Default revenue model for new contracts |
+**Campos clave**: `nombre`, `descripcion`, `estado`
 
-**Business Rules**: Deprecated plans retain FK refs from existing contracts. New contracts cannot use deprecated plans.
+**Reglas**: Productos en `deprecated` no se ofrecen a clientes nuevos pero siguen siendo válidos para clientes con planes basados en ellos.
 
 ---
 
-## revenue_model_configs
+## 6. `plans`
 
-**Purpose**: Named, reusable revenue model templates. CFO configures; contracts reference.
+**Propósito**: Oferta comercial concreta. Define límites y modelo de revenue.
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `tipo` | revenue_model_tipo | CAUTE, PERCENTAGE_REVENUE, PER_USER, PER_EXPEDIENT, CAUTE_THEN_PERCENTAGE, USERS_AND_EXPEDIENTS, TIERED |
-| `parametros` | JSONB | Model-specific parameters (thresholds, rates, tiers) |
+**Campos clave**:
+- `producto_id` — producto al que pertenece
+- `usuario_limite`, `expediente_limite_mes` — NULL = ilimitado
+- `precio_fijo` — opcional
+- `modelo_revenue_config` (JSONB) — apunta a un `revenue_model_configs.id`
 
-**Business Rules**: **NEVER modify an active config in place.** Create a new config and update the contract reference. Changes to active configs affect billing retroactively.
-
----
-
-## contracts
-
-**Purpose**: Formalizes the commercial agreement: plan, term, revenue model, and pricing limits.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `numero` | VARCHAR UK | Human-readable ID: CONTRATO-{YYYY}-{SLUG}-{SEQ} |
-| `revenue_model_id` | UUID FK | Points to the revenue_model_configs in use |
-| `limite_expedientes` | INT | Monthly threshold for caute escalado |
-| `porcentaje_recaudo` | NUMERIC(5,4) | Revenue share: 0.1000 = 10% |
-| `escalado_tipo` | VARCHAR | Set when model auto-transitions (e.g. caute → percentage) |
-
-**Business Rules**: Revenue calculations require CFO + legal approval to change. `fecha_vencimiento > fecha_inicio`.
+**Reglas**:
+- Cambios en pricing requieren aprobación CFO + Legal.
+- Plan en `deprecated` no se asigna a nuevos tenants.
+- Acceso a features: vía `plan_features` (junction).
+- Acceso explícito por recurso: vía `plan_protected_resources` (override granular).
 
 ---
 
-## tenant_entitlements
+## 7. `revenue_model_configs`
 
-**Purpose**: What each tenant has contractually activated. Drives feature_flags creation.
+**Propósito**: Configuración reutilizable de modelo de revenue.
 
-**Business Rules**: Exactly one of `feature_id` or `protected_resource_id` must be set (enforced by CHECK constraint). Time-bounded entitlements set `fecha_vencimiento`.
+**Campos clave**:
+- `tipo` — `CAUTE | PERCENTAGE_REVENUE | PER_USER | PER_EXPEDIENT | CAUTE_THEN_PERCENTAGE | USERS_AND_EXPEDIENTS | TIERED`
+- `parametros` (JSONB) — varía por tipo (ver comment de columna en `04-contracts.sql`)
 
----
-
-## feature_flags
-
-**Purpose**: Runtime ON/OFF state per tenant per protected resource. Checked on every authenticated request.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `codigo_recurso` | VARCHAR | Denormalized PR code for fast indexed lookup |
-| `activo` | BOOLEAN | Current state. Redis cache (TTL 5 min) mirrors this |
-| `razon` | TEXT | Required for audit compliance on every change |
-
-**Business Rules**: **NEVER edit directly in DB.** Use JikkoOps UI or admin API only. Every change must produce a row in `feature_flag_audit`.
-
-**Typical Queries**: `SELECT activo FROM feature_flags WHERE tenant_id=$1 AND codigo_recurso=$2`.
+**Reglas**:
+- Validación de schema JSONB se hace en capa de aplicación.
+- No se borra: si se descontinúa, se marca `activo = false`.
 
 ---
 
-## feature_flag_audit
+## 8. `contracts`
 
-**Purpose**: Immutable log of every flag state change (manual or automatic).
+**Propósito**: Acuerdo formal entre JikkoOps y un tenant.
 
-**Business Rules**: INSERT-ONLY. Application must prevent UPDATE/DELETE via RLS. `activado_por` = user UUID or literal 'system'.
+**Campos clave**:
+- `tenant_id`, `plan_id`, `revenue_model_id`
+- `numero` — único, patrón `CONTRATO-{YYYY}-{CLIENTE}-{NNN}`
+- `tipo_contrato` — `principal | renovacion | enmienda`
+- `estado` — `borrador | en_revision | activo | vencido | cancelado`
+- `limite_expedientes`, `porcentaje_recaudo` — snapshot del modelo
+- `escalado_tipo`, `escalado_fecha` — track del escalado automático
 
----
+**Reglas**:
+- `porcentaje_recaudo` ∈ (0, 1] (CHECK).
+- `fecha_vencimiento > fecha_inicio` (CHECK).
+- Activación dispara sync de entitlements y flags.
+- Cambios en `valor_total_cop` o `revenue_model_id` requieren MFA + audit_log.
 
-## invoices
-
-**Purpose**: Monthly billing documents sent to tenants.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `numero_factura` | VARCHAR UK | Format: FACT-{YYYY}-{MM}-{SLUG} |
-| `estado` | invoice_estado | borrador → emitida → pagada/vencida/anulada |
-| `total` | NUMERIC(15,2) | Cached aggregate of invoice_lines |
-
-**Business Rules**: Totals must match sum of invoice_lines. Anulada invoices cannot be reopened.
-
----
-
-## invoice_lines
-
-**Purpose**: Individual line items composing an invoice. Enables detailed querying and audit.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `origen` | invoice_line_origen | Source of this charge: expediente, usuarios, recaudo, fijo, minimo, descuento |
-| `metadata` | JSONB | Source data used for calculation (for audit verification) |
-
-**Business Rules**: `subtotal = cantidad × precio_unitario` (enforced by CHECK except for descuento lines).
+**Consultas típicas**:
+- Activos venciendo en 90 días (vista `v_contracts_expiring_90d`).
+- Por tenant + estado (`idx_contracts_tenant_estado`).
 
 ---
 
-## expedientes_sync
+## 9. `tenant_entitlements`
 
-**Purpose**: Tracks expedients reported by SILIN, used for caute limit detection and per-expedient billing.
+**Propósito**: Qué se le ha **otorgado** a un tenant (origen comercial). Distinto de `feature_flags` (qué está **prendido** ahora).
 
-**Business Rules**: `(tenant_id, expediente_id_externo)` is unique — prevents double-counting from retry events.
+**Campos clave**:
+- `tenant_id` — receptor
+- Exactamente uno de `feature_id` o `protected_resource_id` (CHECK)
+- `motivo` — ej. "renovación anual", "upgrade de plan"
+- `aprobado_por` — usuario que aprobó
 
-**Typical Queries**: `SELECT COUNT(*) FROM expedientes_sync WHERE tenant_id=$1 AND DATE_TRUNC('month',fecha)=DATE_TRUNC('month',NOW())`.
-
----
-
-## audit_log
-
-**Purpose**: Immutable 7-year audit trail of all significant state changes. Fiscal compliance requirement.
-
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `tabla_afectada` | VARCHAR | Which table changed |
-| `registro_id` | UUID | Which row changed |
-| `valores_anterior` | JSONB | Full row state before change (NULL for INSERTs) |
-| `valores_nuevo` | JSONB | Full row state after change (NULL for DELETEs) |
-
-**Business Rules**: INSERT-ONLY. Enforce via RLS. Archive rows >2 years to cold storage; retain 7 years minimum.
+**Reglas**: Sincroniza con `feature_flags` mediante job cada 5 min.
 
 ---
 
-## sdk_metrics
+## 10. `feature_flags`
 
-**Purpose**: Performance and cost telemetry per protected resource invocation.
+**Propósito**: Estado runtime ON/OFF de cada protected_resource por tenant.
 
-| Field | Type | Business Meaning |
-|-------|------|-----------------|
-| `resource_codigo` | VARCHAR | Denormalized PR code (e.g. LIQ-001) |
-| `cost_usd` | NUMERIC(10,6) | tokens_used × per-token rate |
-| `execution_time_ms` | INT | Latency for observability SLAs |
+**Campos clave**:
+- `(tenant_id, protected_resource_id)` — UNIQUE
+- `codigo_recurso` — desnormalizado para lookups rápidos
+- `activo` (BOOLEAN)
+- `razon` — auditable
 
-**Business Rules**: Partitioned by month (RANGE on timestamp). Monthly partitions must be pre-created. Retain 24 months online; archive older data.
+**Reglas**:
+- ⚠️ **NUNCA editar directamente en BD** — usar UI/API de JikkoOps.
+- Cada cambio se replica en `feature_flag_audit`.
+- Cacheado en Redis con TTL 5 min — fallback a BD si Redis cae.
+- Si `entitlement` y `flag` divergen, prevalece `entitlement` (resync).
+
+**Consultas típicas**:
+- "¿está prendido X recurso para Y tenant?" (`idx_feature_flags_tenant_resource`).
+
+---
+
+## 11. `feature_flag_audit`
+
+**Propósito**: Log inmutable de cada cambio de flag.
+
+**Campos clave**: `flag_id`, `accion`, `valor_anterior`, `valor_nuevo`, `activado_por`, `razon`, `contexto`
+
+**Reglas**:
+- **Insert-only**. UPDATE/DELETE prohibidos a nivel app + recomendado RLS.
+- Retención mínima: 7 años (compliance fiscal).
+
+---
+
+## 12. `invoices`
+
+**Propósito**: Documento de facturación emitido a un tenant por un período.
+
+**Campos clave**:
+- `numero_factura` — único
+- `periodo_inicio`, `periodo_fin`
+- `estado` — `borrador | emitida | pagada | vencida | anulada`
+- `subtotal`, `iva`, `descuentos`, `total` — CHECK: `total = subtotal + iva - descuentos`
+- `documento_pdf_ref` — referencia a PDF en object storage
+
+**Reglas**:
+- Anulación requiere razón + audit_log.
+- Cambios después de `emitida` requieren aprobación.
+
+---
+
+## 13. `invoice_lines`
+
+**Propósito**: Líneas de detalle de cada factura (queryable, no en JSONB).
+
+**Campos clave**:
+- `origen` — `expediente | usuarios | recaudo | fijo | minimo | descuento`
+- `metadata` — auditoría del cálculo (fórmula, conteos)
+
+**Reglas**: ON DELETE CASCADE de invoice (junction de detalle).
+
+---
+
+## 14. `expedientes_sync`
+
+**Propósito**: Registro de cada expediente reportado por SILIN, para facturación.
+
+**Campos clave**:
+- `(tenant_id, expediente_id_externo)` — UNIQUE
+- `fecha`, `estado`, `sync_source`
+
+**Reglas**:
+- Idempotente: mismo expediente no se cuenta dos veces.
+- Volumen objetivo: 50M/mes — particionar por mes cuando llegue el momento.
+
+---
+
+## 15. `users`
+
+**Propósito**: Operadores de JikkoOps y usuarios scopeados a tenant.
+
+**Campos clave**:
+- `entity_id` — NULL = staff JikkoOps; set = usuario de un tenant
+- `email` — único
+- `password_hash` — bcrypt/argon2
+- `estado` — `activo | inactivo | bloqueado`
+
+---
+
+## 16. `roles` + `user_roles`
+
+**Propósito**: RBAC. `roles` define bundles de permisos; `user_roles` asigna roles a usuarios.
+
+**Campos clave**:
+- `roles.permisos` (JSONB) — array de strings `"resource:action"`
+- `user_roles.tenant_id` — opcional, para roles tenant-scoped
+
+**Reglas**:
+- `permisos: ["*:*"]` = admin total.
+- Un usuario puede tener múltiples roles (sumativos).
+
+---
+
+## 17. `mfa_credentials`
+
+**Propósito**: TOTP MFA por usuario para acciones críticas.
+
+**Campos clave**:
+- `secret` — encriptado AES-256-GCM por capa de app
+- `intentos_fallidos` — lockout tras 5
+- `bloqueado_hasta` — timestamp del lockout
+- `backup_codes` — códigos de un solo uso, encriptados
+
+**Reglas**: 
+- Requerido en endpoints críticos: liquidación >$50M, cambio de pricing, anulación de factura.
+
+---
+
+## 18. `audit_log`
+
+**Propósito**: Log inmutable de todo cambio en datos de negocio.
+
+**Campos clave**: `tabla_afectada`, `registro_id`, `operacion`, `valores_anterior`, `valores_nuevo`, `timestamp`, `ip_address`, `razon`
+
+**Reglas**:
+- ⚠️ **Insert-only**. Bloquear UPDATE/DELETE a nivel app y RLS.
+- Retención mínima: **7 años** (Colombia, requisito fiscal).
+- Particionar mensualmente cuando supere ~10M filas.
+
+**Consultas típicas**:
+- Por tabla + registro (`idx_audit_log_tabla_registro`).
+- Por tenant + rango de tiempo.
+
+---
+
+## 19. `sdk_metrics`
+
+**Propósito**: Métricas de cada ejecución de un protected_resource (latencia, costo, success).
+
+**Campos clave**:
+- `resource_codigo` — desnormalizado para filtrar
+- `execution_time_ms`, `tokens_used`, `cost_usd`
+- `success`, `error_code`
+
+**Reglas**: Volumen alto — particionar mensualmente al escalar.
+
+**Consultas típicas**:
+- Costo total por tenant en período.
+- Recursos top por latencia/costo.
+
+---
+
+## Tablas-Junction (sin diccionario completo)
+
+- `feature_protected_resources` — features ↔ recursos
+- `plan_features` — planes ↔ features
+- `plan_protected_resources` — planes ↔ recursos (override granular)
+- `user_roles` — usuarios ↔ roles (con tenant_id opcional)
+
+Todas con CASCADE delete porque sólo representan asociaciones.
+
+---
+
+## Vistas
+
+- `v_tenant_active_flags` — flags activos por tenant.
+- `v_contracts_expiring_90d` — pipeline de renovación.
+- `v_revenue_summary` — postura de revenue de contratos activos.
+- `v_invoice_totals` — agregados de facturación por tenant.

@@ -1,221 +1,120 @@
 -- =============================================================================
--- JikkoOps Control Database - Catalog Seed Data
+-- JikkoOps Seed Data - Initial Catalog
 -- =============================================================================
--- Inserts the foundational catalog: features, protected resources, products,
--- plans, and one revenue model config per type.
--- Safe to re-run (uses ON CONFLICT DO NOTHING).
+-- Seeds the minimum catalog so JikkoOps is usable on a fresh install:
+--   - 3 features (Liquidacion, Documentos, Servicio Ciudadano)
+--   - 8 protected resources (per spec inventory)
+--   - 2 products (Basico, Completo)
+--   - 3 plans (Basico, Estandar, Premium)
+--   - 1 revenue model config per type
 -- =============================================================================
 
--- ---------------------------------------------------------------------------
--- Features (3)
--- ---------------------------------------------------------------------------
+BEGIN;
 
+-- ---------------------------------------------------------------------------
+-- Features
+-- ---------------------------------------------------------------------------
 INSERT INTO features (id, nombre, descripcion, modulo, criticidad, estado) VALUES
-(
-    'f1000000-0000-0000-0000-000000000001',
-    'Liquidación',
-    'Funcionalidades del módulo de liquidación tributaria y de servicios',
-    'SILIN', 'critica', 'activo'
-),
-(
-    'f1000000-0000-0000-0000-000000000002',
-    'Gestión Documental',
-    'Funcionalidades para creación, firma y gestión de documentos oficiales',
-    'DOS', 'alta', 'activo'
-),
-(
-    'f1000000-0000-0000-0000-000000000003',
-    'Servicio al Ciudadano',
-    'Funcionalidades para notificaciones y atención a ciudadanos',
-    'SOCIA', 'alta', 'activo'
-)
-ON CONFLICT (nombre, modulo) DO NOTHING;
+    ('11111111-1111-1111-1111-000000000001', 'Liquidacion',         'Calculo y emision de liquidaciones tributarias',          'SILIN', 'critica', 'activo'),
+    ('11111111-1111-1111-1111-000000000002', 'Gestion Documental',  'Creacion, firma y archivo de documentos digitales',       'DOS',   'alta',    'activo'),
+    ('11111111-1111-1111-1111-000000000003', 'Servicio Ciudadano',  'Notificaciones y atencion al ciudadano',                  'SOCIA', 'alta',    'activo');
 
 -- ---------------------------------------------------------------------------
--- Protected Resources (8)
+-- Protected Resources (matches inventory in 01-arquitectura/02-protected-resources.md)
 -- ---------------------------------------------------------------------------
-
 INSERT INTO protected_resources (id, codigo, nombre, tipo, modulo, feature_id, descripcion, criticidad, estado) VALUES
--- SILIN resources
-(
-    'a1000000-0000-0000-0000-000000000001',
-    'LIQ-001', 'Botón Liquidar', 'button', 'SILIN',
-    'f1000000-0000-0000-0000-000000000001',
-    'Permite al usuario iniciar el proceso de liquidación de un expediente',
-    'critica', 'activo'
-),
-(
-    'a1000000-0000-0000-0000-000000000002',
-    'LIQ-002', 'Endpoint POST /liquidaciones', 'endpoint', 'SILIN',
-    'f1000000-0000-0000-0000-000000000001',
-    'API endpoint para crear una nueva liquidación',
-    'critica', 'activo'
-),
-(
-    'a1000000-0000-0000-0000-000000000003',
-    'LIQ-003', 'Endpoint GET /liquidaciones/{id}', 'endpoint', 'SILIN',
-    'f1000000-0000-0000-0000-000000000001',
-    'API endpoint para consultar una liquidación específica',
-    'critica', 'activo'
-),
-(
-    'a1000000-0000-0000-0000-000000000004',
-    'LIQ-004', 'Dashboard de Liquidación', 'view', 'SILIN',
-    'f1000000-0000-0000-0000-000000000001',
-    'Vista del dashboard con métricas y estado de liquidaciones',
-    'alta', 'activo'
-),
--- DOS resources
-(
-    'a1000000-0000-0000-0000-000000000005',
-    'DOC-001', 'Crear Documento', 'button', 'DOS',
-    'f1000000-0000-0000-0000-000000000002',
-    'Permite crear un nuevo documento oficial en el sistema',
-    'alta', 'activo'
-),
-(
-    'a1000000-0000-0000-0000-000000000006',
-    'DOC-003', 'Firma Digital', 'action', 'DOS',
-    'f1000000-0000-0000-0000-000000000002',
-    'Permite aplicar firma digital a documentos oficiales',
-    'critica', 'activo'
-),
--- SOCIA resources
-(
-    'a1000000-0000-0000-0000-000000000007',
-    'SOC-001', 'Enviar Notificación Manual', 'button', 'SOCIA',
-    'f1000000-0000-0000-0000-000000000003',
-    'Permite enviar una notificación manual a un ciudadano',
-    'alta', 'activo'
-),
-(
-    'a1000000-0000-0000-0000-000000000008',
-    'SOC-002', 'Enviar Notificación Digital', 'action', 'SOCIA',
-    'f1000000-0000-0000-0000-000000000003',
-    'Envía notificación digital automática (SMS, email, app)',
-    'media', 'activo'
-)
-ON CONFLICT (codigo) DO NOTHING;
+    -- SILIN
+    ('22222222-2222-2222-2222-000000000001', 'LIQ-001', 'Boton Liquidar',                'button',   'SILIN', '11111111-1111-1111-1111-000000000001', 'Permite ejecutar liquidacion sobre un expediente seleccionado', 'critica', 'activo'),
+    ('22222222-2222-2222-2222-000000000002', 'LIQ-002', 'Endpoint POST /liquidaciones',  'endpoint', 'SILIN', '11111111-1111-1111-1111-000000000001', 'Crea una liquidacion via API',                                  'critica', 'activo'),
+    ('22222222-2222-2222-2222-000000000003', 'LIQ-003', 'Endpoint GET /liquidaciones',   'endpoint', 'SILIN', '11111111-1111-1111-1111-000000000001', 'Consulta detalle de liquidaciones',                             'critica', 'activo'),
+    ('22222222-2222-2222-2222-000000000004', 'LIQ-004', 'Vista Dashboard Liquidacion',   'view',     'SILIN', '11111111-1111-1111-1111-000000000001', 'Dashboard con KPIs de liquidacion',                              'alta',    'activo'),
+    -- DOS
+    ('22222222-2222-2222-2222-000000000005', 'DOC-001', 'Crear Documento',               'button',   'DOS',   '11111111-1111-1111-1111-000000000002', 'Crear documento digital nuevo',                                  'alta',    'activo'),
+    ('22222222-2222-2222-2222-000000000006', 'DOC-003', 'Firma Digital',                 'action',   'DOS',   '11111111-1111-1111-1111-000000000002', 'Aplicar firma digital a un documento',                          'critica', 'activo'),
+    -- SOCIA
+    ('22222222-2222-2222-2222-000000000007', 'SOC-001', 'Notificacion Manual',           'button',   'SOCIA', '11111111-1111-1111-1111-000000000003', 'Enviar notificacion manual al ciudadano',                       'alta',    'activo'),
+    ('22222222-2222-2222-2222-000000000008', 'SOC-002', 'Porcentaje de Recaudo',         'action',   'SOCIA', '11111111-1111-1111-1111-000000000003', 'Activador automatico del modelo de % de recaudo',               'critica', 'activo');
+
+-- Link features → protected_resources
+INSERT INTO feature_protected_resources (feature_id, protected_resource_id)
+SELECT pr.feature_id, pr.id FROM protected_resources pr WHERE pr.feature_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
--- feature_protected_resources junctions
+-- Products
 -- ---------------------------------------------------------------------------
-
-INSERT INTO feature_protected_resources (feature_id, protected_resource_id) VALUES
-('f1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000001'),
-('f1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000002'),
-('f1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000003'),
-('f1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000004'),
-('f1000000-0000-0000-0000-000000000002', 'a1000000-0000-0000-0000-000000000005'),
-('f1000000-0000-0000-0000-000000000002', 'a1000000-0000-0000-0000-000000000006'),
-('f1000000-0000-0000-0000-000000000003', 'a1000000-0000-0000-0000-000000000007'),
-('f1000000-0000-0000-0000-000000000003', 'a1000000-0000-0000-0000-000000000008')
-ON CONFLICT DO NOTHING;
-
--- ---------------------------------------------------------------------------
--- Products (2)
--- ---------------------------------------------------------------------------
-
 INSERT INTO products (id, nombre, descripcion, estado) VALUES
-(
-    'b1000000-0000-0000-0000-000000000001',
-    'JikkoOps Básico',
-    'Producto base con módulo de liquidación SILIN para entidades pequeñas',
-    'activo'
-),
-(
-    'b1000000-0000-0000-0000-000000000002',
-    'JikkoOps Completo',
-    'Producto completo con SILIN + DOS + SOCIA para entidades de mediano y gran tamaño',
-    'activo'
-)
-ON CONFLICT (nombre) DO NOTHING;
+    ('33333333-3333-3333-3333-000000000001', 'JikkoOps Basico',   'Producto basico: liquidacion (SILIN)',                          'activo'),
+    ('33333333-3333-3333-3333-000000000002', 'JikkoOps Completo', 'Producto integral: SILIN + DOS + SOCIA',                        'activo');
 
 -- ---------------------------------------------------------------------------
--- Plans (3)
+-- Revenue Model Configs (one per type)
 -- ---------------------------------------------------------------------------
+INSERT INTO revenue_model_configs (id, nombre, tipo, parametros) VALUES
+    ('44444444-4444-4444-4444-000000000001', 'Caute - 1000 expedientes',         'CAUTE',
+     '{"limite_expedientes": 1000, "precio_excedente": 50.00}'),
 
-INSERT INTO plans (id, nombre, descripcion, producto_id, usuario_limite, expediente_limite_mes, precio_fijo, modelo_revenue_default, estado) VALUES
-(
-    'c1000000-0000-0000-0000-000000000001',
-    'Plan Básico',
-    'Acceso a liquidación básica. Ideal para municipios pequeños.',
-    'b1000000-0000-0000-0000-000000000001',
-    50, 1000, NULL,
-    '{"tipo": "CAUTE", "limite_expedientes": 1000, "precio_por_excedente_cop": 5000}',
-    'activo'
-),
-(
-    'c1000000-0000-0000-0000-000000000002',
-    'Plan Estándar',
-    'Liquidación + Gestión Documental. Para municipios medianos.',
-    'b1000000-0000-0000-0000-000000000002',
-    100, 5000, NULL,
-    '{"tipo": "CAUTE_THEN_PERCENTAGE", "limite_expedientes": 5000, "meses_caute": 6, "porcentaje_post_caute": 0.1000, "minimo_cop": 50000}',
-    'activo'
-),
-(
-    'c1000000-0000-0000-0000-000000000003',
-    'Plan Premium',
-    'Acceso completo: SILIN + DOS + SOCIA. Para gobernaciones y municipios grandes.',
-    'b1000000-0000-0000-0000-000000000002',
-    NULL, NULL, NULL,
-    '{"tipo": "PERCENTAGE_REVENUE", "porcentaje": 0.1000, "minimo_cop": 100000}',
-    'activo'
-)
-ON CONFLICT (nombre) DO NOTHING;
+    ('44444444-4444-4444-4444-000000000002', 'Recaudo 10%',                      'PERCENTAGE_REVENUE',
+     '{"porcentaje": 0.1000, "minimo_mensual": 50000.00}'),
 
--- plan_features junctions
+    ('44444444-4444-4444-4444-000000000003', 'Por Usuario - Estandar',           'PER_USER',
+     '{"precio_usuario": 2000.00}'),
+
+    ('44444444-4444-4444-4444-000000000004', 'Por Expediente - Estandar',        'PER_EXPEDIENT',
+     '{"precio_expediente": 50.00, "minimo_mensual": 10000.00}'),
+
+    ('44444444-4444-4444-4444-000000000005', 'Caute + Recaudo Hibrido',          'CAUTE_THEN_PERCENTAGE',
+     '{"limite_expedientes": 5000, "meses_caute": 6, "porcentaje": 0.1000, "minimo_mensual": 50000.00}'),
+
+    ('44444444-4444-4444-4444-000000000006', 'Usuarios + Expedientes',           'USERS_AND_EXPEDIENTS',
+     '{"precio_usuario": 1000.00, "umbral_expedientes": 500, "precio_excedente": 100.00}'),
+
+    ('44444444-4444-4444-4444-000000000007', 'Tarifa Escalonada',                'TIERED',
+     '{"tramos": [{"hasta": 500, "precio": 0}, {"hasta": 1000, "precio": 50.00}, {"hasta": 5000, "precio": 30.00}, {"precio": 20.00}]}');
+
+-- ---------------------------------------------------------------------------
+-- Plans
+-- ---------------------------------------------------------------------------
+INSERT INTO plans (id, nombre, descripcion, producto_id, usuario_limite, expediente_limite_mes, modelo_revenue_config, estado) VALUES
+    ('55555555-5555-5555-5555-000000000001', 'Plan Basico',
+     'Solo modulo de liquidacion (SILIN). Ideal para municipios pequenos.',
+     '33333333-3333-3333-3333-000000000001', 50, 1000,
+     '{"revenue_model_id": "44444444-4444-4444-4444-000000000001"}', 'activo'),
+
+    ('55555555-5555-5555-5555-000000000002', 'Plan Estandar',
+     'SILIN + DOS. Liquidacion y gestion documental.',
+     '33333333-3333-3333-3333-000000000002', 100, 5000,
+     '{"revenue_model_id": "44444444-4444-4444-4444-000000000002"}', 'activo'),
+
+    ('55555555-5555-5555-5555-000000000003', 'Plan Premium',
+     'Producto integral: SILIN + DOS + SOCIA. Sin limites.',
+     '33333333-3333-3333-3333-000000000002', NULL, NULL,
+     '{"revenue_model_id": "44444444-4444-4444-4444-000000000005"}', 'activo');
+
+-- ---------------------------------------------------------------------------
+-- Plan ↔ Feature mapping
+-- ---------------------------------------------------------------------------
 INSERT INTO plan_features (plan_id, feature_id) VALUES
--- Plan Básico: SILIN only
-('c1000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001'),
--- Plan Estándar: SILIN + DOS
-('c1000000-0000-0000-0000-000000000002', 'f1000000-0000-0000-0000-000000000001'),
-('c1000000-0000-0000-0000-000000000002', 'f1000000-0000-0000-0000-000000000002'),
--- Plan Premium: all
-('c1000000-0000-0000-0000-000000000003', 'f1000000-0000-0000-0000-000000000001'),
-('c1000000-0000-0000-0000-000000000003', 'f1000000-0000-0000-0000-000000000002'),
-('c1000000-0000-0000-0000-000000000003', 'f1000000-0000-0000-0000-000000000003')
-ON CONFLICT DO NOTHING;
+    -- Plan Basico: only Liquidacion
+    ('55555555-5555-5555-5555-000000000001', '11111111-1111-1111-1111-000000000001'),
+    -- Plan Estandar: Liquidacion + Documental
+    ('55555555-5555-5555-5555-000000000002', '11111111-1111-1111-1111-000000000001'),
+    ('55555555-5555-5555-5555-000000000002', '11111111-1111-1111-1111-000000000002'),
+    -- Plan Premium: all three features
+    ('55555555-5555-5555-5555-000000000003', '11111111-1111-1111-1111-000000000001'),
+    ('55555555-5555-5555-5555-000000000003', '11111111-1111-1111-1111-000000000002'),
+    ('55555555-5555-5555-5555-000000000003', '11111111-1111-1111-1111-000000000003');
 
 -- ---------------------------------------------------------------------------
--- Revenue Model Configs — one per type
+-- Default Roles
 -- ---------------------------------------------------------------------------
+INSERT INTO roles (id, nombre, descripcion, permisos) VALUES
+    ('66666666-6666-6666-6666-000000000001', 'admin',     'Administrador con acceso total',
+     '["*:*"]'),
+    ('66666666-6666-6666-6666-000000000002', 'comercial', 'Equipo comercial — contratos y planes',
+     '["entities:read", "tenants:read", "contracts:*", "plans:read", "invoices:read"]'),
+    ('66666666-6666-6666-6666-000000000003', 'finanzas',  'Equipo financiero — facturacion y revenue',
+     '["invoices:*", "contracts:read", "tenants:read", "revenue_models:*"]'),
+    ('66666666-6666-6666-6666-000000000004', 'soporte',   'Soporte tecnico — flags y operacion',
+     '["feature_flags:*", "tenants:read", "audit_log:read", "sdk_metrics:read"]');
 
-INSERT INTO revenue_model_configs (nombre, tipo, parametros) VALUES
-(
-    'Caute Básico — 1000 expedientes',
-    'CAUTE',
-    '{"limite_expedientes": 1000, "precio_por_excedente_cop": 5000}'
-),
-(
-    'Porcentaje Recaudo 10%',
-    'PERCENTAGE_REVENUE',
-    '{"porcentaje": 0.1000, "minimo_cop": 50000}'
-),
-(
-    'Por Usuario — 20.000 COP/mes',
-    'PER_USER',
-    '{"precio_usuario_cop": 20000, "minimo_usuarios": 10}'
-),
-(
-    'Por Expediente — 500 COP',
-    'PER_EXPEDIENT',
-    '{"precio_expediente_cop": 500, "minimo_mensual_cop": 10000}'
-),
-(
-    'Caute 6 meses luego 10% Recaudo',
-    'CAUTE_THEN_PERCENTAGE',
-    '{"limite_expedientes": 1000, "meses_caute": 6, "porcentaje_post_caute": 0.1000, "minimo_cop": 50000}'
-),
-(
-    'Usuarios + Expedientes Excedente',
-    'USERS_AND_EXPEDIENTS',
-    '{"precio_usuario_cop": 10000, "umbral_expedientes": 500, "precio_excedente_cop": 1000}'
-),
-(
-    'Tarifas Escalonadas por Volumen',
-    'TIERED',
-    '{"bandas": [{"desde": 0, "hasta": 500, "precio_cop": 0}, {"desde": 501, "hasta": 1000, "precio_cop": 5000}, {"desde": 1001, "hasta": null, "precio_cop": 3000}]}'
-)
-ON CONFLICT (nombre) DO NOTHING;
+COMMIT;

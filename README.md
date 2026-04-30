@@ -1,158 +1,171 @@
 # poc-jikkoops-db
 
-**JikkoOps Control Database** — First-approach PostgreSQL schema for the JikkoOps back-office system.
+> **Status**: 🟡 v0.1 — Primer enfoque (first approach). Evolutivo. NO es la versión final.
+>
+> Este esquema seguirá evolucionando según especificaciones del área de Producto y CEO.
 
-> **Status**: v0.1 — First approach. Evolutive design. Will be refined as product specs are confirmed by the product area and CEO.
+Esquema PostgreSQL de la **base de datos central de control** de JikkoOps — el back-office comercial del ecosistema SIGIA para municipios, gobernaciones y entidades públicas colombianas.
 
----
+## ¿Qué es este repo?
 
-## What This Is
+Este repositorio contiene el **modelo de datos de la BD central** de JikkoOps:
+- Tablas, ENUMs, índices y vistas (PostgreSQL 15+)
+- Migraciones (estilo Alembic)
+- Seed data inicial del catálogo
+- Documentación: ERD + diccionario de datos
 
-This repository contains the **central control database** schema for JikkoOps — a modular back-office system that enables Colombian municipalities, gobernaciones, and public entities to:
+**No** contiene la BD operativa por tenant (cada tenant tiene su propia BD aislada — ver decisión arquitectural #1 en [poc-jikkoops-docs](https://github.com/diegotrujillo-jikko/poc-jikkoops-docs)).
 
-- Commercialize digital government services as configurable plans
-- Control tenant access via Protected Resources and feature flags
-- Monetize flexibly (caute, percentage revenue, per-user, per-expedient, hybrid)
-- Integrate with SILIN (liquidation), DOS (documents), SOCIA (citizen services)
-- Audit every revenue and access-control change for 7-year fiscal compliance
-
-This is the **central** database only. Each tenant also has its own isolated operational database (managed by SILIN/DOS/SOCIA) — that schema is not in this repo.
-
----
-
-## Architecture: Central DB vs Tenant DBs
+## Arquitectura: Control DB vs Tenant DBs
 
 ```
-JikkoOps Central DB (this repo)          Tenant Operational DB (per tenant)
-─────────────────────────────────        ──────────────────────────────────
-entities (clients)                       expedientes (domain data)
-tenants (instances)                      liquidaciones
-contracts (agreements)                   documentos
-plans / products (catalog)               ciudadanos
-feature_flags (access control)           (managed by SILIN/DOS/SOCIA)
-invoices / billing
-users / auth / MFA
-audit_log (immutable)
-sdk_metrics
+                    ┌──────────────────────────┐
+                    │  poc-jikkoops-db         │
+                    │  (Control Database)      │
+                    │                          │
+                    │  - entities, tenants     │
+                    │  - plans, contracts      │
+                    │  - feature_flags         │
+                    │  - invoices, audit_log   │
+                    └──────────┬───────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ↓                ↓                ↓
+    ┌─────────────────┐ ┌─────────────────┐ ┌──────────────┐
+    │ tenant_cali_db  │ │ tenant_medellin │ │ tenant_*_db  │
+    │  (operacional)  │ │      _db        │ │              │
+    │                 │ │                 │ │              │
+    │ - liquidaciones │ │ - liquidaciones │ │ - ...        │
+    │ - expedientes   │ │ - expedientes   │ │              │
+    │ - documentos    │ │ - documentos    │ │              │
+    └─────────────────┘ └─────────────────┘ └──────────────┘
 ```
 
-The tenant's DB connection string is stored encrypted in `tenants.db_connection_string` and used by the API to route requests to the correct isolated database.
-
----
+Esta BD (la central) es la **fuente de verdad comercial**: quién contrató qué, qué tiene activado, cuánto se le factura. Las BDs de tenant manejan los datos operativos del día a día.
 
 ## Stack
 
-| Component | Technology |
-|-----------|-----------|
-| Database | PostgreSQL 15+ |
-| Migrations | Alembic (Python) |
-| Schema Format | Plain SQL (`.sql` files) |
-| Extensions | uuid-ossp, pgcrypto, btree_gist |
+- **PostgreSQL** ≥ 15 (usa `gen_random_uuid()`, `INET`, JSONB, partitioning)
+- **Extensiones**: `uuid-ossp`, `pgcrypto`, `btree_gist`
+- **Migraciones**: estilo Alembic (Python) o Flyway (esquema versionado)
+- **Encriptación**: AES-256-GCM en capa de aplicación para `db_connection_string`, `mfa_credentials.secret`, `mfa_credentials.backup_codes`
 
----
-
-## Repository Structure
+## Estructura del repo
 
 ```
 poc-jikkoops-db/
 ├── schema/
-│   ├── 00-extensions.sql       # Extensions + all ENUM types (run first)
-│   ├── 01-entities.sql         # entities table + set_updated_at() trigger fn
-│   ├── 02-tenants.sql          # tenants table
-│   ├── 03-catalog.sql          # features, protected_resources, products, plans, junctions
-│   ├── 04-contracts.sql        # revenue_model_configs, contracts
-│   ├── 05-entitlements.sql     # tenant_entitlements, feature_flags, feature_flag_audit
-│   ├── 06-billing.sql          # invoices, invoice_lines, expedientes_sync
-│   ├── 07-users-auth.sql       # users, roles, user_roles, mfa_credentials
-│   ├── 08-audit.sql            # audit_log, sdk_metrics (partitioned)
-│   └── 09-views-indexes.sql    # All indexes + 4 materialized views
-│
+│   ├── 00-extensions.sql       # Extensiones + ENUMs
+│   ├── 01-entities.sql         # Clientes físicos
+│   ├── 02-tenants.sql          # Instancias JikkoOps
+│   ├── 03-catalog.sql          # Productos, planes, features, recursos
+│   ├── 04-contracts.sql        # Modelos de revenue + contratos
+│   ├── 05-entitlements.sql     # Derechos + feature flags + audit
+│   ├── 06-billing.sql          # Facturas + líneas + sync expedientes
+│   ├── 07-users-auth.sql       # Usuarios, roles, MFA
+│   ├── 08-audit.sql            # Audit log + métricas SDK
+│   └── 09-views-indexes.sql    # Índices + vistas
 ├── migrations/
-│   └── V001__initial_schema.sql  # Entry point: runs all schema files in order
-│
+│   └── V001__initial_schema.sql # Migración inicial (orquesta todos los .sql)
 ├── seed/
-│   └── 001-catalog-seed.sql    # Features, protected resources, products, plans
-│
+│   └── 001-catalog-seed.sql    # Catálogo inicial: features, PRs, planes, roles
 ├── docs/
-│   ├── ERD.md                  # Mermaid entity relationship diagram
-│   └── DICCIONARIO.md          # Data dictionary for all 20 tables
-│
-├── CLAUDE.md                   # Guidance for Claude Code
-└── README.md                   # This file
+│   ├── ERD.md                  # Diagrama Entidad-Relación (Mermaid)
+│   └── DICCIONARIO.md          # Diccionario de datos (por tabla)
+├── CLAUDE.md                   # Guía para Claude Code
+└── README.md                   # Este archivo
 ```
-
----
 
 ## Quick Start
 
-### Prerequisites
-
-- PostgreSQL 15+
-- `psql` CLI
-
-### Run Initial Migration
+### 1. Crear BD vacía
 
 ```bash
-# Create the database
 createdb jikkoops_control
+```
 
-# Run the full migration
+### 2. Aplicar el esquema inicial
+
+```bash
 psql -d jikkoops_control -f migrations/V001__initial_schema.sql
+```
 
-# Seed catalog data (features, resources, products, plans)
+### 3. Cargar el catálogo seed
+
+```bash
 psql -d jikkoops_control -f seed/001-catalog-seed.sql
 ```
 
-### With Alembic (Python)
+### 4. Verificar
 
-```bash
-pip install alembic psycopg2-binary
+```sql
+-- Listar tablas creadas
+\dt
 
-# Initialize alembic (if not already done)
-alembic init alembic
+-- Ver el catálogo seed
+SELECT codigo, nombre, modulo, estado FROM protected_resources ORDER BY codigo;
 
-# Configure alembic.ini with your DB URL
-# sqlalchemy.url = postgresql://user:pass@localhost/jikkoops_control
-
-# Generate and apply migration
-alembic revision --autogenerate -m "initial schema"
-alembic upgrade head
+-- Ver vistas disponibles
+\dv
 ```
 
----
-
-## Key Domain Concepts
+## Conceptos clave
 
 ### Protected Resources
-Every button, endpoint, view, and action has a unique code (e.g. `LIQ-001`). These codes are **immutable** — never rename them after deployment.
 
-### Feature Flags
-Runtime ON/OFF state per tenant per resource. Checked on every authenticated request. Source of truth is the `feature_flags` table; Redis (TTL 5 min) is the cache layer.
+Cada botón, endpoint, vista, y acción del sistema es un "Protected Resource" con código único (`LIQ-001`, `DOC-003`, etc.). Permite:
+- Modularización comercial (vender features granulares)
+- Control runtime ON/OFF por tenant (feature flags)
+- Auditoría exacta de qué tiene cada cliente
+
+### Plans + Contracts + Tenant Entitlements
+
+- **Plan**: oferta comercial (Plan Básico, Plan Estándar, Plan Premium)
+- **Contract**: instancia firmada con un tenant específico
+- **Tenant Entitlement**: derechos otorgados (origen del flag)
+- **Feature Flag**: estado runtime ON/OFF (con caché Redis)
 
 ### Revenue Models
-Stored as JSON config in `revenue_model_configs`. Supported models: CAUTE, PERCENTAGE_REVENUE, PER_USER, PER_EXPEDIENT, CAUTE_THEN_PERCENTAGE, USERS_AND_EXPEDIENTS, TIERED.
 
-### Audit Log
-Insert-only table. 7-year retention required by Colombian fiscal law. Application enforces no UPDATE/DELETE via RLS.
+7 tipos soportados, configurables vía JSON: `CAUTE`, `PERCENTAGE_REVENUE`, `PER_USER`, `PER_EXPEDIENT`, `CAUTE_THEN_PERCENTAGE`, `USERS_AND_EXPEDIENTS`, `TIERED`.
 
----
+## Decisiones arquitecturales heredadas
 
-## Full Documentation
+(De [poc-jikkoops-docs/06-riesgos-decisiones/02-decisiones-arquitecturales.md](https://github.com/diegotrujillo-jikko/poc-jikkoops-docs/blob/main/06-riesgos-decisiones/02-decisiones-arquitecturales.md))
 
-See [poc-jikkoops-docs](https://github.com/diegotrujillo-jikko/poc-jikkoops-docs) for:
-- Architecture overview
-- Business processes and contract lifecycle
-- API endpoints and integration events
-- Risk matrix and architectural decisions
+1. **DB-per-tenant** para datos operativos (esta BD es central, sólo de control).
+2. **Feature flags en BD** (no en JWT) — control dinámico, auditable.
+3. **PostgreSQL** (no NoSQL) — ACID + JOINs + JSON cuando hace falta.
+4. **Audit log insert-only** — retención 7 años por requerimiento fiscal.
+5. **Revenue models como JSON config** — el CFO puede ajustar sin code deploy.
 
----
+## Reglas de cambio
 
-## Version
+🚫 **NO modificar sin aprobación**:
+- Cálculos de revenue (CFO + Legal).
+- Códigos de protected_resources existentes.
+- Estructura de `audit_log` (insert-only por diseño).
 
-**v0.1** — First approach. Schema will evolve based on:
-- Product area specifications
-- CEO-approved revenue model updates
-- Team tech stack confirmation (Python/FastAPI vs Node.js/NestJS)
-- Load testing results (50M expedients/month target)
+✅ **Seguro modificar**:
+- Agregar nuevas tablas para nuevos módulos.
+- Agregar columnas con `DEFAULT NULL`.
+- Crear nuevas vistas.
+- Ajustar índices.
 
-See `docs/ERD.md` for the full entity relationship diagram.
+Toda modificación al esquema debe pasar por nueva migración versionada (`V002__...`, `V003__...`).
+
+## Roadmap (no exhaustivo)
+
+- [ ] Particionamiento de `audit_log`, `sdk_metrics`, `expedientes_sync`.
+- [ ] Row-Level Security (RLS) en `audit_log` para enforcement insert-only.
+- [ ] Triggers de captura automática para `audit_log` (vs cada UPDATE en código).
+- [ ] Esquema de la BD operativa por tenant (separado, fuera de este repo).
+- [ ] Procedimientos almacenados de cálculo de revenue (decisión: mantener en app por ahora).
+- [ ] Integración con Alembic real (`alembic.ini`, `env.py`, `versions/`).
+
+## Documentación complementaria
+
+- 📘 [poc-jikkoops-docs](https://github.com/diegotrujillo-jikko/poc-jikkoops-docs) — Documentación funcional y arquitectural completa.
+- 📊 `docs/ERD.md` — Diagrama Entidad-Relación.
+- 📒 `docs/DICCIONARIO.md` — Diccionario de cada tabla.
+- 🤖 `CLAUDE.md` — Guía para Claude Code en este repo.

@@ -1,106 +1,80 @@
 -- =============================================================================
--- JikkoOps Control Database - Audit Log and SDK Metrics
+-- JikkoOps Control Database - Audit Log & SDK Metrics
+-- =============================================================================
+-- These tables track every change for compliance (7-year retention required by
+-- Colombian fiscal law) and resource execution metrics for cost analytics.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
 -- Table: audit_log
--- Immutable insert-only table. Records every significant state change.
--- Retention: 7 years (Colombian fiscal compliance requirement).
--- IMPORTANT: Application must prevent UPDATE and DELETE on this table via:
---   1. RLS policy (recommended): RESTRICT to INSERT for non-superuser roles
---   2. Application-level enforcement in the repository layer
+-- Insert-only log of every business-data change in the system.
+-- Required for fiscal compliance — retention 7 years minimum.
+-- WARNING: UPDATE and DELETE on this table MUST be prevented at the
+-- application layer and ideally via PostgreSQL row-level security policies.
 -- ---------------------------------------------------------------------------
-
 CREATE TABLE audit_log (
-    id                  UUID            NOT NULL DEFAULT gen_random_uuid(),
-    -- NULL for system-initiated events (cron jobs, automated escalado)
-    tenant_id           UUID,
-    -- NULL for system-initiated events
-    usuario_id          UUID,
-    -- Name of the table that was modified (e.g. 'contracts', 'feature_flags')
-    tabla_afectada      VARCHAR(100)    NOT NULL,
-    -- UUID of the specific row that changed
-    registro_id         UUID            NOT NULL,
-    operacion           audit_operacion NOT NULL,
-    -- Full row state before the operation (NULL for INSERT)
-    valores_anterior    JSONB,
-    -- Full row state after the operation (NULL for DELETE)
-    valores_nuevo       JSONB,
-    timestamp           TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    ip_address          INET,
-    user_agent          TEXT,
-    -- Free-text reason provided by the operator (required for manual changes)
-    razon               TEXT,
-    -- Session identifier for correlating multiple events from one user session
-    session_id          TEXT,
+    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID            REFERENCES tenants(id) ON DELETE RESTRICT,
+    usuario_id      UUID            REFERENCES users(id)   ON DELETE RESTRICT,
 
-    CONSTRAINT pk_audit_log             PRIMARY KEY (id),
-    CONSTRAINT fk_audit_tenant          FOREIGN KEY (tenant_id)
-                                            REFERENCES tenants (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_audit_usuario         FOREIGN KEY (usuario_id)
-                                            REFERENCES users (id) ON DELETE RESTRICT
+    tabla_afectada  VARCHAR(100)    NOT NULL,        -- e.g. 'contracts', 'feature_flags'
+    registro_id     UUID            NOT NULL,        -- PK of affected row
+    operacion       audit_operacion NOT NULL,
+    valores_anterior JSONB,                          -- NULL on INSERT
+    valores_nuevo   JSONB,                          -- NULL on DELETE
+
+    "timestamp"     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    ip_address      INET,
+    user_agent      TEXT,
+    session_id      TEXT,
+    razon           TEXT
+    -- NO updated_at — this table is insert-only
 );
 
--- RLS: Restrict to INSERT for application roles.
--- Superuser / DBA role may SELECT for compliance reporting.
--- Run as superuser after creating the app role:
---
--- ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
--- CREATE POLICY audit_log_insert_only ON audit_log
---     FOR INSERT TO app_role WITH CHECK (true);
--- CREATE POLICY audit_log_select ON audit_log
---     FOR SELECT TO app_role USING (true);
--- (No UPDATE or DELETE policy = those operations are denied for app_role)
+COMMENT ON TABLE  audit_log                  IS 'IMMUTABLE insert-only audit trail. 7-year retention. UPDATE/DELETE MUST be blocked.';
+COMMENT ON COLUMN audit_log.valores_anterior IS 'Snapshot before change. NULL for INSERT operations.';
+COMMENT ON COLUMN audit_log.valores_nuevo    IS 'Snapshot after change. NULL for DELETE operations.';
+COMMENT ON COLUMN audit_log.razon            IS 'Optional human-readable reason for manual operations.';
 
-COMMENT ON TABLE audit_log IS
-    'INSERT-ONLY immutable audit trail. Retention: 7 years (fiscal compliance). '
-    'Enforce via RLS — no UPDATE or DELETE allowed for app role. '
-    'Archive rows older than 2 years to audit_log_archive table (same schema).';
+-- Enable row-level security and DENY UPDATE/DELETE for everyone (recommended).
+-- Application layer should ALSO enforce insert-only. Run after grants are set up:
+--
+--   ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+--   CREATE POLICY audit_log_no_update ON audit_log FOR UPDATE USING (false);
+--   CREATE POLICY audit_log_no_delete ON audit_log FOR DELETE USING (false);
+--
+-- These are commented because they depend on role grants that vary by environment.
 
 -- ---------------------------------------------------------------------------
 -- Table: sdk_metrics
--- Records performance and cost data for every Protected Resource invocation.
--- Partitioned by month for efficient querying and archiving.
--- NOTE: Monthly child partitions must be created in advance or automatically
---       via pg_partman. See docs/PARTITIONS.md for management instructions.
+-- Per-execution metrics for every protected resource invocation.
+-- Used for cost analytics and SLA monitoring.
+-- High volume — partition by month at scale (commented stub below).
 -- ---------------------------------------------------------------------------
-
 CREATE TABLE sdk_metrics (
-    id                  UUID            NOT NULL DEFAULT gen_random_uuid(),
-    tenant_id           UUID            NOT NULL,
-    -- Protected resource code (denormalized for partition-local queries without join)
-    resource_codigo     VARCHAR(20)     NOT NULL,
-    -- Optional FK — may be NULL if resource was deleted/deprecated
-    resource_id         UUID,
-    execution_time_ms   INT             NOT NULL,
-    tokens_used         INT             NOT NULL DEFAULT 0,
-    -- Computed cost: tokens_used × per-token rate
-    cost_usd            NUMERIC(10,6)   NOT NULL DEFAULT 0,
-    success             BOOLEAN         NOT NULL DEFAULT true,
-    -- Error code if success = false (e.g. 'TIMEOUT', 'AUTH_FAILED', 'LIMIT_EXCEEDED')
-    error_code          VARCHAR(50),
-    timestamp           TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    -- Additional context for debugging
-    -- Expected shape: {"endpoint": "/liquidaciones", "method": "POST", "trace_id": "..."}
-    metadata            JSONB,
+    id                UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id         UUID          REFERENCES tenants(id) ON DELETE RESTRICT,
+    -- Denormalized PR code for fast filtering without JOIN
+    resource_codigo   VARCHAR(20)   NOT NULL,
+    resource_id       UUID          REFERENCES protected_resources(id) ON DELETE SET NULL,
+    execution_time_ms INT           NOT NULL,
+    tokens_used       INT,
+    cost_usd          NUMERIC(10,6),    -- 6-decimal USD for fractional token costs
+    success           BOOLEAN       NOT NULL,
+    error_code        VARCHAR(60),
+    "timestamp"       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- {"endpoint": "...", "method": "POST", "request_size_bytes": 1234, "extras": {}}
+    metadata          JSONB         NOT NULL DEFAULT '{}'
+);
 
-    CONSTRAINT pk_sdk_metrics               PRIMARY KEY (id, timestamp),
-    CONSTRAINT fk_sdk_metrics_tenant        FOREIGN KEY (tenant_id)
-                                                REFERENCES tenants (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_sdk_metrics_resource      FOREIGN KEY (resource_id)
-                                                REFERENCES protected_resources (id) ON DELETE SET NULL,
-    CONSTRAINT chk_sdk_metrics_exec_time    CHECK (execution_time_ms >= 0),
-    CONSTRAINT chk_sdk_metrics_cost         CHECK (cost_usd >= 0)
-) PARTITION BY RANGE (timestamp);
+COMMENT ON TABLE  sdk_metrics                 IS 'Per-execution metrics. High volume — plan for monthly partitioning at scale.';
+COMMENT ON COLUMN sdk_metrics.resource_codigo IS 'Denormalized PR code for fast filtering without JOIN.';
+COMMENT ON COLUMN sdk_metrics.cost_usd        IS 'Computed cost (tokens * tariff). Stored at insert time for stability.';
 
--- Default partition catches any rows that fall outside defined monthly ranges.
--- Replace with monthly partitions managed by pg_partman in production.
-CREATE TABLE sdk_metrics_default PARTITION OF sdk_metrics DEFAULT;
-
-COMMENT ON TABLE sdk_metrics IS
-    'Performance and cost metrics per Protected Resource invocation. '
-    'Partitioned by timestamp (monthly). Use pg_partman for automated partition management. '
-    'Retention: 24 months online; archive older partitions to cold storage.';
-COMMENT ON COLUMN sdk_metrics.cost_usd IS
-    'Monetary cost in USD: tokens_used × current per-token rate. '
-    'Used for observability dashboards and cost-per-function reporting.';
+-- Future partitioning at scale (run when sdk_metrics > 50M rows):
+--
+--   ALTER TABLE sdk_metrics ... PARTITION BY RANGE ("timestamp");
+--   CREATE TABLE sdk_metrics_202604 PARTITION OF sdk_metrics
+--     FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
+--
+-- Same applies to audit_log and expedientes_sync once those reach scale.
