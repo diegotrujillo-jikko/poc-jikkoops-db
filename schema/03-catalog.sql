@@ -140,3 +140,12 @@ CREATE TABLE plan_protected_resources (
 );
 
 COMMENT ON TABLE plan_protected_resources IS 'M:N — granular override: specific resources explicitly included/excluded per plan.';
+
+-- ---------------------------------------------------------------------------
+-- Deferred FK: tenants.plan_id -> plans(id)
+-- 02-tenants.sql declares plan_id without an inline FK because plans is
+-- created in this file. Adding the constraint here closes the forward reference.
+-- ---------------------------------------------------------------------------
+ALTER TABLE tenants
+    ADD CONSTRAINT fk_tenants_plan_id
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE RESTRICT;

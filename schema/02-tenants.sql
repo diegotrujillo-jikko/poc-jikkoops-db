@@ -16,7 +16,8 @@ CREATE TABLE tenants (
     db_connection_string    TEXT,
 
     region                  VARCHAR(100),
-    plan_id                 UUID          REFERENCES plans(id) ON DELETE RESTRICT,
+    -- FK to plans is added at the end of 03-catalog.sql (forward reference resolved there)
+    plan_id                 UUID,
 
     -- Commercial limits from active contract
     usuarios_limite         INT,
