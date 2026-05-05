@@ -41,7 +41,9 @@ CREATE INDEX idx_invoices_estado                ON invoices(estado);
 CREATE INDEX idx_invoices_vencimiento           ON invoices(fecha_vencimiento) WHERE estado IN ('emitida', 'vencida');
 CREATE INDEX idx_invoice_lines_invoice_id       ON invoice_lines(invoice_id);
 CREATE INDEX idx_expedientes_sync_tenant_fecha  ON expedientes_sync(tenant_id, fecha);
-CREATE INDEX idx_expedientes_sync_tenant_month  ON expedientes_sync(tenant_id, DATE_TRUNC('month', fecha));
+-- Cast to TIMESTAMP (not TIMESTAMPTZ) so the IMMUTABLE overload of date_trunc is
+-- selected — required for index expressions. fecha is a DATE so this cast is safe.
+CREATE INDEX idx_expedientes_sync_tenant_month  ON expedientes_sync(tenant_id, DATE_TRUNC('month', fecha::TIMESTAMP));
 
 -- users / auth
 CREATE INDEX idx_users_email             ON users(email);
