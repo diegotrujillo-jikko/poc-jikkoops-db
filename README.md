@@ -68,7 +68,9 @@ poc-jikkoops-db/
 ├── migrations/
 │   └── V001__initial_schema.sql # Migración inicial (orquesta todos los .sql)
 ├── seed/
-│   └── 001-catalog-seed.sql    # Catálogo inicial: features, PRs, planes, roles
+│   ├── 001-catalog-seed.sql    # Catálogo inicial: features, PRs, planes, roles (PROD-safe)
+│   └── dev-only/
+│       └── 002-demo-tenants.sql # Datos demo: entidades, tenants, contratos (DEV ONLY)
 ├── docs/
 │   ├── ERD.md                  # Diagrama Entidad-Relación (Mermaid)
 │   └── DICCIONARIO.md          # Diccionario de datos (por tabla)
@@ -77,6 +79,11 @@ poc-jikkoops-db/
 ```
 
 ## Quick Start
+
+> ⚠️ **Importante**: Ejecuta los comandos **desde la raíz del repo** (`poc-jikkoops-db/`).
+> El archivo `migrations/V001__initial_schema.sql` usa rutas relativas (`\i schema/00-extensions.sql`, etc.) que se resuelven contra el `cwd` de `psql`.
+>
+> ⚠️ **Orden obligatorio**: V001 → 001-catalog-seed → (opcional) 002-demo-tenants. El paso 002 referencia UUIDs creados por 001; si lo corres sin 001, la transacción se hace rollback completo y no verás registros.
 
 ### 1. Crear BD vacía
 
@@ -87,16 +94,34 @@ createdb jikkoops_control
 ### 2. Aplicar el esquema inicial
 
 ```bash
-psql -d jikkoops_control -f migrations/V001__initial_schema.sql
+cd poc-jikkoops-db
+psql -v ON_ERROR_STOP=1 --echo-errors -d jikkoops_control \
+     -f migrations/V001__initial_schema.sql
 ```
 
-### 3. Cargar el catálogo seed
+Las flags `-v ON_ERROR_STOP=1 --echo-errors` aseguran que cualquier error aborte y se muestre en consola en vez de quedar enterrado.
+
+### 3. Cargar el catálogo seed (datos de referencia, PROD-safe)
 
 ```bash
-psql -d jikkoops_control -f seed/001-catalog-seed.sql
+psql -v ON_ERROR_STOP=1 --echo-errors -d jikkoops_control \
+     -f seed/001-catalog-seed.sql
 ```
 
-### 4. Verificar
+Inserta: 3 features, 8 protected resources, 2 products, 3 plans, 7 revenue model configs, 4 roles. Estos datos son referencia del sistema y son seguros para producción.
+
+### 4. (Opcional) Cargar datos demo — SOLO DESARROLLO
+
+```bash
+psql -v ON_ERROR_STOP=1 --echo-errors -d jikkoops_control \
+     -f seed/dev-only/002-demo-tenants.sql
+```
+
+Inserta datos sintéticos para ejercitar el sistema end-to-end: 2 entities (Cali, Medellin), 2 tenants, 3 users, 2 contracts, entitlements, feature_flags, 250 expedientes, 1 invoice, sample audit_log y sdk_metrics.
+
+🚫 **No ejecutar en producción.** El archivo tiene un guard `DO` que aborta si detecta entidades sin el prefijo UUID `aaaaaaaa-...`.
+
+### 5. Verificar
 
 ```sql
 -- Listar tablas creadas
@@ -107,6 +132,40 @@ SELECT codigo, nombre, modulo, estado FROM protected_resources ORDER BY codigo;
 
 -- Ver vistas disponibles
 \dv
+
+-- Si cargaste demo data: ver tenants demo
+SELECT t.nombre_tecnico, t.estado, p.nombre AS plan
+FROM tenants t JOIN plans p ON t.plan_id = p.id;
+```
+
+### Troubleshooting
+
+| Error | Causa probable | Solución |
+|-------|---------------|----------|
+| `relation "entities" does not exist` | V001 no aplicado | Correr paso 2 |
+| `violates foreign key constraint "tenants_plan_id_fkey"` | 001-catalog-seed no aplicado antes de 002 | Correr paso 3 antes de paso 4 |
+| `Refusing to seed demo data: N non-demo entities` | Entidades reales pre-existentes | Limpiar BD o usar otro esquema |
+| `duplicate key value violates unique constraint` | Re-ejecutaste 002 sin limpiar | Borrar filas demo (`WHERE id::TEXT LIKE 'aaaaaaaa-%'`) y reintentar |
+| Cero registros, sin error visible | Corriste sin `-v ON_ERROR_STOP=1` y la transacción hizo rollback | Re-correr con la flag para ver el error real |
+
+### Reset de datos demo (mantiene catálogo y datos reales)
+
+```sql
+BEGIN;
+DELETE FROM audit_log           WHERE tenant_id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM sdk_metrics         WHERE tenant_id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM invoice_lines       WHERE invoice_id IN (SELECT id FROM invoices WHERE id::TEXT LIKE 'aaaaaaaa-%');
+DELETE FROM invoices            WHERE id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM expedientes_sync    WHERE tenant_id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM feature_flags       WHERE tenant_id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM tenant_entitlements WHERE tenant_id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM contracts           WHERE id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM mfa_credentials     WHERE id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM user_roles          WHERE user_id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM users               WHERE id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM tenants             WHERE id::TEXT LIKE 'aaaaaaaa-%';
+DELETE FROM entities            WHERE id::TEXT LIKE 'aaaaaaaa-%';
+COMMIT;
 ```
 
 ## Conceptos clave
