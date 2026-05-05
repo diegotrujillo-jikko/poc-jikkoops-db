@@ -55,15 +55,21 @@ CREATE TRIGGER trg_roles_updated_at
 -- Assigns roles to users, optionally scoped to a specific tenant.
 -- ---------------------------------------------------------------------------
 CREATE TABLE user_roles (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role_id     UUID        NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
     -- NULL = role applies globally; set = role only for this tenant
     tenant_id   UUID        REFERENCES tenants(id) ON DELETE CASCADE,
     granted_by  UUID        REFERENCES users(id) ON DELETE SET NULL,
-    granted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    PRIMARY KEY (user_id, role_id, COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::UUID))
+    granted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Uniqueness: a role cannot be granted twice for the same (user, tenant_scope).
+-- COALESCE turns NULL tenant_id into a sentinel zero UUID so global vs tenant-scoped
+-- grants are distinguishable. PostgreSQL allows function expressions only in indexes,
+-- not in PRIMARY KEY / UNIQUE constraints — hence CREATE UNIQUE INDEX.
+CREATE UNIQUE INDEX uq_user_roles_scope
+    ON user_roles (user_id, role_id, COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::UUID));
 
 COMMENT ON TABLE  user_roles           IS 'M:N user↔role assignment. Optional tenant scope for per-tenant role grants.';
 COMMENT ON COLUMN user_roles.tenant_id IS 'NULL = global role; set = role only valid for this tenant.';
